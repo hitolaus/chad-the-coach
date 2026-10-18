@@ -1,0 +1,22 @@
+{
+	"$schema": "node_modules/wrangler/config-schema.json",
+	"name": "chad-the-coach",
+	"main": "src/index.ts",
+	"compatibility_date": "2026-10-01",
+	// global_fetch_strictly_public is required for Client ID Metadata Documents (how ChatGPT identifies itself).
+	"compatibility_flags": [
+		"nodejs_compat",
+		"global_fetch_strictly_public"
+	],
+	"vars": {
+		// The public base URL of this Worker. Update it after the first deploy.
+		"PUBLIC_URL": "https://chad-the-coach.jakob-a15.workers.dev"
+	},
+	// No id: Wrangler creates the namespace on the first deploy.
+	"kv_namespaces": [
+		{
+			"binding": "OAUTH_KV",
+			"id": "db79a32bcebb4ffba0a941e350e7e5c1"
+		}
+	]
+}
