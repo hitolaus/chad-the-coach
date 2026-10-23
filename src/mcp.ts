@@ -2,27 +2,20 @@ import { McpServer } from "@modelcontextprotocol/server";
 import { env } from "cloudflare:workers";
 import { z } from "zod";
 import { GarminClient, GarminError } from "./garmin";
+import { registerLegacyTools } from "./legacy/tools";
 import {
   dateRange,
   mergeDailyHealth,
   summarizeActivity,
   summarizeActivityDetail,
-  summarizeTrainingStatus,
-  summarizeVo2MaxHistory,
   type GarminActivity,
   type GarminActivityDetail,
   type GarminDailySummary,
-  type GarminExerciseSet,
   type GarminHrvDay,
-  type GarminHrZone,
-  type GarminLap,
-  type GarminMaxMet,
-  type GarminReadiness,
-  type GarminSleepDay,
-  type GarminTrainingStatus
+  type GarminSleepDay
 } from "./summaries";
 
-// Garmin's sleep statistics endpoint returns at most 28 days per request.
+// Garmin's sleep summaries endpoint answers an empty object for long ranges; 28 days is safe.
 export const MAX_HEALTH_DAYS = 28;
 
 const date = z
@@ -34,7 +27,6 @@ const readOnly = { readOnlyHint: true, openWorldHint: false };
 
 export function createServer() {
   const server = new McpServer({ name: "chad-the-coach", version: "0.2.0" });
-  const garmin = new GarminClient(env.OAUTH_KV);
 
   server.registerTool(
     "ping",
@@ -48,12 +40,22 @@ export function createServer() {
     })
   );
 
+  // GARMIN_API is set in wrangler.jsonc.
+  if (env.GARMIN_API === "legacy") registerLegacyTools(server);
+  else registerPersonalTools(server);
+
+  return server;
+}
+
+function registerPersonalTools(server: McpServer) {
+  const garmin = new GarminClient(env.OAUTH_KV, env.GARMIN_API_KEY);
+
   server.registerTool(
     "get_activities",
     {
       title: "Activities",
       description:
-        "Lists Garmin activities (rides, runs, strength sessions...), newest first: distance, duration, heart rate and minutes per HR zone, power, TSS, training effect and training load. Without dates it returns the most recent ones.",
+        "Lists Garmin activities (rides, runs, strength sessions...), newest first: distance, duration, heart rate and minutes per HR zone, power, TSS, training effect, training load, VO2max when the activity updated it, and exercises with sets and reps for strength sessions. Without dates it returns the most recent ones.",
       inputSchema: z.object({
         start_date: date.optional(),
         end_date: date.optional(),
@@ -83,30 +85,21 @@ export function createServer() {
     {
       title: "Activity details",
       description:
-        "Full detail for one activity (id from get_activities): summary metrics, time in each heart rate zone, laps, and sets for strength workouts.",
+        "Full detail for one activity (id from get_activities): summary metrics including cadence and FTP, and for structured workouts the time, heart rate and power of the warm-up, work, rest, recovery and cool-down intervals.",
       inputSchema: z.object({ activity_id: z.number().int().describe("Garmin activity id") }),
       annotations: readOnly
     },
     async ({ activity_id }) =>
-      garminResult(async () => {
-        const base = `/activity-service/activity/${activity_id}`;
-        const [detail, splits, zones] = await Promise.all([
-          garmin.get<GarminActivityDetail>(base),
-          orEmpty(garmin.get<{ lapDTOs?: GarminLap[] }>(`${base}/splits`), {}),
-          orEmpty(garmin.get<GarminHrZone[]>(`${base}/hrTimeInZones`), [])
-        ]);
-        const sets = detail.activityTypeDTO?.typeKey?.includes("strength")
-          ? (await orEmpty(garmin.get<{ exerciseSets?: GarminExerciseSet[] }>(`${base}/exerciseSets`), {})).exerciseSets
-          : undefined;
-        return summarizeActivityDetail(detail, splits.lapDTOs ?? [], zones, sets);
-      })
+      garminResult(async () =>
+        summarizeActivityDetail(await garmin.get<GarminActivityDetail>(`/activity-service/activity/${activity_id}`))
+      )
   );
 
   server.registerTool(
     "get_daily_health",
     {
       title: "Daily health",
-      description: `Day-by-day health and recovery for a date range (at most ${MAX_HEALTH_DAYS} days): resting heart rate, HRV (overnight average, weekly average, status, balanced range), sleep (score, duration, stages), Body Battery, stress, morning training readiness, steps and intensity minutes. Sleep and HRV on a date are for the night ending that morning. Use with get_activities to relate training to recovery.`,
+      description: `Day-by-day health and recovery for a date range (at most ${MAX_HEALTH_DAYS} days): resting heart rate, HRV (overnight average, weekly average, status, balanced range), sleep (score, duration, stages, sleep need), Body Battery, stress, steps and intensity minutes. Sleep and HRV on a date are for the night ending that morning. Use with get_activities to relate training to recovery.`,
       inputSchema: z.object({ start_date: date, end_date: date }),
       annotations: readOnly
     },
@@ -117,69 +110,25 @@ export function createServer() {
         return errorResult(`The range is ${days} days; ask for at most ${MAX_HEALTH_DAYS} days at a time.`);
       }
       return garminResult(async () => {
-        const [summaries, sleep, hrv, readiness] = await Promise.all([
+        const [summaries, sleep, hrv] = await Promise.all([
           garmin.get<{ data?: GarminDailySummary[] }>("/usersummary-service/v2/dailysummaries", {
             startDate: start_date,
             endDate: end_date
           }),
-          garmin.get<{ individualStats?: GarminSleepDay[] }>(`/sleep-service/stats/sleep/daily/${start_date}/${end_date}`),
-          garmin.get<{ hrvSummaries?: GarminHrvDay[] }>(`/hrv-service/hrv/daily/${start_date}/${end_date}`),
-          garmin.get<GarminReadiness[]>(`/metrics-service/metrics/trainingreadiness/${start_date}/${end_date}`)
+          garmin.get<GarminSleepDay[]>("/sleep-service/sleep/dailySleepSummariesByDate", {
+            startDate: start_date,
+            endDate: end_date
+          }),
+          garmin.get<{ hrvSummaries?: GarminHrvDay[] }>(`/hrv-service/hrv/daily/${start_date}/${end_date}`)
         ]);
         return mergeDailyHealth(start_date, end_date, {
           summaries: summaries?.data ?? [],
-          sleep: sleep?.individualStats ?? [],
-          hrv: hrv?.hrvSummaries ?? [],
-          readiness: Array.isArray(readiness) ? readiness : []
+          sleep: Array.isArray(sleep) ? sleep : [],
+          hrv: hrv?.hrvSummaries ?? []
         });
       });
     }
   );
-
-  server.registerTool(
-    "get_training_status",
-    {
-      title: "Training status",
-      description:
-        "Garmin's training status as of a date: status (productive, maintaining, detraining...), acute and chronic training load with the acute:chronic ratio, the four-week load focus (low aerobic / high aerobic / anaerobic against targets), and the latest VO2max and fitness age.",
-      inputSchema: z.object({ date }),
-      annotations: readOnly
-    },
-    async ({ date }) =>
-      garminResult(async () =>
-        summarizeTrainingStatus(
-          await garmin.get<GarminTrainingStatus>(`/metrics-service/metrics/trainingstatus/aggregated/${date}`)
-        )
-      )
-  );
-
-  server.registerTool(
-    "get_vo2max_history",
-    {
-      title: "VO2max history",
-      description: "VO2max estimates (general/running and cycling) on each day Garmin updated them within a date range.",
-      inputSchema: z.object({ start_date: date, end_date: date }),
-      annotations: readOnly
-    },
-    async ({ start_date, end_date }) =>
-      garminResult(async () =>
-        summarizeVo2MaxHistory(
-          await garmin.get<GarminMaxMet[]>(`/metrics-service/metrics/maxmet/daily/${start_date}/${end_date}`)
-        )
-      )
-  );
-
-  return server;
-}
-
-// Some activities have no laps or zones; Garmin answers 404 for those.
-async function orEmpty<T>(request: Promise<T>, empty: T): Promise<T> {
-  try {
-    return (await request) ?? empty;
-  } catch (error) {
-    if (error instanceof GarminError && error.status === 404) return empty;
-    throw error;
-  }
 }
 
 function errorResult(message: string) {

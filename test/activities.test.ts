@@ -18,7 +18,8 @@ describe("summarizeActivity", () => {
       hrTimeInZone_2: 1500.4,
       hrTimeInZone_3: 900,
       hrTimeInZone_4: 0,
-      hrTimeInZone_5: null
+      hrTimeInZone_5: null,
+      summarizedExerciseSets: [{ category: "SQUAT", sets: 3, reps: 24, maxWeight: 80000 }]
     });
 
     expect(summary).toMatchObject({
@@ -32,7 +33,8 @@ describe("summarizeActivity", () => {
       averageHr: 151,
       elevationGainM: 88,
       trainingLoad: 143,
-      hrZoneMinutes: [2, 25, 15, 0, 0]
+      hrZoneMinutes: [2, 25, 15, 0, 0],
+      exerciseSets: [{ exercise: "SQUAT", sets: 3, reps: 24, maxWeight: 80000 }]
     });
   });
 
@@ -43,6 +45,7 @@ describe("summarizeActivity", () => {
     expect(summary.averageSpeedKmh).toBeUndefined();
     expect(summary.averagePowerW).toBeUndefined();
     expect(summary.hrZoneMinutes).toBeUndefined();
+    expect(summary.exerciseSets).toBeUndefined();
   });
 });
 
@@ -50,36 +53,41 @@ describe("summarizeActivityDetail", () => {
   const detail = {
     activityId: 1,
     activityName: "Townsend",
-    activityTypeDTO: { typeKey: "indoor_cycling" },
+    activityTypeDTO: { typeKey: "road_biking" },
     summaryDTO: { duration: 5400, averagePower: 217, normalizedPower: 219, trainingStressScore: 67.4, intensityFactor: 0.671 }
   };
 
-  it("includes power metrics, HR zones and laps", () => {
-    const summary = summarizeActivityDetail(
-      detail,
-      [{ lapIndex: 1, duration: 300, averageHR: 114, averagePower: 190, averageBikeCadence: 80 }],
-      [{ zoneNumber: 2, secsInZone: 1830, zoneLowBoundary: 115 }],
-      undefined
-    );
-
-    expect(summary).toMatchObject({
+  it("includes power metrics", () => {
+    expect(summarizeActivityDetail(detail)).toMatchObject({
       durationMin: 90,
       averagePowerW: 217,
       normalizedPowerW: 219,
       trainingStressScore: 67,
-      intensityFactor: 0.67,
-      hrZones: [{ zone: 2, fromBpm: 115, minutes: 30.5 }],
-      laps: [{ lap: 1, durationMin: 5, averageHr: 114, averagePowerW: 190, averageCadence: 80 }]
+      intensityFactor: 0.67
     });
-    expect(summary.exerciseSets).toBeUndefined();
   });
 
-  it("lists only the working sets of a strength session", () => {
-    const summary = summarizeActivityDetail(detail, [], [], [
-      { setType: "ACTIVE", repetitionCount: 10, duration: 40, exercises: [{ category: "SQUAT", name: "BARBELL_BACK_SQUAT" }] },
-      { setType: "REST", duration: 90 }
-    ]);
+  it("sums up the workout's intervals by type", () => {
+    const summary = summarizeActivityDetail({
+      ...detail,
+      splitSummaries: [
+        { splitType: "INTERVAL_WARMUP", noOfSplits: 1, duration: 720, averageHR: 155, averagePower: 250 },
+        { splitType: "INTERVAL_ACTIVE", noOfSplits: 4, duration: 6376.354, distance: 52310, averageHR: 149, maxHR: 171, averagePower: 223.599 }
+      ]
+    });
 
-    expect(summary.exerciseSets).toEqual([{ exercise: "BARBELL_BACK_SQUAT", reps: 10, durationSec: 40, weight: undefined }]);
+    expect(summary.intervals).toEqual([
+      { type: "WARMUP", count: 1, durationMin: 12, averageHr: 155, averagePowerW: 250 },
+      { type: "ACTIVE", count: 4, durationMin: 106.3, distanceKm: 52.31, averageHr: 149, maxHr: 171, averagePowerW: 224 }
+    ]);
+  });
+
+  it("leaves out Garmin's other split groupings, such as by surface", () => {
+    const summary = summarizeActivityDetail({
+      ...detail,
+      splitSummaries: [{ splitType: "SURFACE_TYPE_PAVED", noOfSplits: 4, duration: 11204 }]
+    });
+
+    expect(summary.intervals).toEqual([]);
   });
 });

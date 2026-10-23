@@ -1,8 +1,8 @@
 import { env } from "cloudflare:workers";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { TOKENS_KEY } from "../src/garmin";
+import { TOKEN_KEY } from "../src/garmin";
 import { MAX_HEALTH_DAYS } from "../src/mcp";
-import { callTool } from "./helpers";
+import { callTool, mcpRequest, rpcResult, signIn } from "./helpers";
 
 const realFetch = globalThis.fetch;
 let garminRequests: string[];
@@ -12,7 +12,7 @@ function stubGarmin(responses: Record<string, unknown>) {
   garminRequests = [];
   vi.spyOn(globalThis, "fetch").mockImplementation(async (input, init) => {
     const url = new URL(input instanceof Request ? input.url : String(input));
-    if (url.hostname !== "connectapi.garmin.com") return realFetch(input, init);
+    if (url.hostname !== "personal.connectapi.garmin.com") return realFetch(input, init);
     garminRequests.push(url.pathname + url.search);
     return url.pathname in responses ? Response.json(responses[url.pathname]) : new Response(null, { status: 404 });
   });
@@ -24,23 +24,19 @@ const futureToken = () => {
 };
 
 beforeEach(async () => {
-  await env.OAUTH_KV.put(
-    TOKENS_KEY,
-    JSON.stringify({ di_token: futureToken(), di_refresh_token: "refresh", di_client_id: "CLIENT" })
-  );
+  await env.OAUTH_KV.put(TOKEN_KEY, futureToken());
 });
 
 afterEach(() => vi.restoreAllMocks());
 
 describe("get_daily_health", () => {
-  it("joins Garmin's daily summary, sleep, HRV and readiness for each day", async () => {
+  it("joins Garmin's daily summary, sleep and HRV for each day", async () => {
     stubGarmin({
       "/usersummary-service/v2/dailysummaries": { data: [{ calendarDate: "2026-10-16", heartRate: { restingValue: 43 } }] },
-      "/sleep-service/stats/sleep/daily/2026-10-16/2026-10-17": {
-        individualStats: [{ calendarDate: "2026-10-17", values: { sleepScore: 61 } }]
-      },
-      "/hrv-service/hrv/daily/2026-10-16/2026-10-17": { hrvSummaries: [{ calendarDate: "2026-10-17", lastNightAvg: 48 }] },
-      "/metrics-service/metrics/trainingreadiness/2026-10-16/2026-10-17": [{ calendarDate: "2026-10-17", score: 69 }]
+      "/sleep-service/sleep/dailySleepSummariesByDate": [
+        { calendarDate: "2026-10-17", sleepScores: { overall: { value: 61, qualifierKey: "FAIR" } } }
+      ],
+      "/hrv-service/hrv/daily/2026-10-16/2026-10-17": { hrvSummaries: [{ calendarDate: "2026-10-17", lastNightAvg: 48 }] }
     });
 
     const result = await callTool("get_daily_health", { start_date: "2026-10-16", end_date: "2026-10-17" });
@@ -49,8 +45,9 @@ describe("get_daily_health", () => {
     const days = JSON.parse(result.content[0].text);
     expect(days).toMatchObject([
       { date: "2026-10-16", restingHr: 43 },
-      { date: "2026-10-17", sleep: { score: 61 }, hrv: { lastNightAvgMs: 48 }, trainingReadiness: { score: 69 } }
+      { date: "2026-10-17", sleep: { score: 61 }, hrv: { lastNightAvgMs: 48 } }
     ]);
+    expect(garminRequests).toContain("/sleep-service/sleep/dailySleepSummariesByDate?startDate=2026-10-16&endDate=2026-10-17");
   });
 
   it(`refuses ranges longer than ${MAX_HEALTH_DAYS} days without calling Garmin`, async () => {
@@ -63,14 +60,14 @@ describe("get_daily_health", () => {
     expect(garminRequests).toEqual([]);
   });
 
-  it("tells the model how to fix a missing Garmin sign-in", async () => {
-    await env.OAUTH_KV.delete(TOKENS_KEY);
+  it("tells the model when Garmin refuses the API key", async () => {
+    await env.OAUTH_KV.delete(TOKEN_KEY);
     stubGarmin({});
 
     const result = await callTool("get_daily_health", { start_date: "2026-10-16", end_date: "2026-10-17" });
 
     expect(result.isError).toBe(true);
-    expect(result.content[0].text).toContain("garmin_login.py");
+    expect(result.content[0].text).toContain("wrangler secret put GARMIN_API_KEY");
   });
 });
 
@@ -98,23 +95,32 @@ describe("get_activities", () => {
 });
 
 describe("get_activity_details", () => {
-  it("still returns the summary when Garmin has no laps or zones for the activity", async () => {
-    stubGarmin({ "/activity-service/activity/9": { activityId: 9, summaryDTO: { averageHR: 120 } } });
-
-    const result = await callTool("get_activity_details", { activity_id: 9 });
-
-    expect(result.isError).toBeFalsy();
-    expect(JSON.parse(result.content[0].text)).toMatchObject({ id: 9, averageHr: 120, laps: [], hrZones: [] });
-  });
-
-  it("fetches exercise sets only for strength workouts", async () => {
+  it("returns the summary and intervals of one activity", async () => {
     stubGarmin({
-      "/activity-service/activity/9": { activityId: 9, activityTypeDTO: { typeKey: "strength_training" } },
-      "/activity-service/activity/9/exerciseSets": { exerciseSets: [{ setType: "ACTIVE", repetitionCount: 8 }] }
+      "/activity-service/activity/9": {
+        activityId: 9,
+        summaryDTO: { averageHR: 120 },
+        splitSummaries: [{ splitType: "INTERVAL_ACTIVE", noOfSplits: 4, duration: 600 }]
+      }
     });
 
     const result = await callTool("get_activity_details", { activity_id: 9 });
 
-    expect(JSON.parse(result.content[0].text).exerciseSets).toEqual([{ reps: 8 }]);
+    expect(result.isError).toBeFalsy();
+    expect(JSON.parse(result.content[0].text)).toMatchObject({
+      id: 9,
+      averageHr: 120,
+      intervals: [{ type: "ACTIVE", count: 4, durationMin: 10 }]
+    });
+    expect(garminRequests).toEqual(["/activity-service/activity/9"]);
+  });
+});
+
+describe("tools/list", () => {
+  it("offers only tools the personal API can serve", async () => {
+    const response = await mcpRequest({ jsonrpc: "2.0", id: 1, method: "tools/list" }, await signIn());
+    const names = (await rpcResult(response)).result.tools.map((t: { name: string }) => t.name);
+
+    expect(names.sort()).toEqual(["get_activities", "get_activity_details", "get_daily_health", "ping"]);
   });
 });

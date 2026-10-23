@@ -38,6 +38,7 @@ export interface GarminActivity {
   hrTimeInZone_3?: Num;
   hrTimeInZone_4?: Num;
   hrTimeInZone_5?: Num;
+  summarizedExerciseSets?: { category?: string; sets?: Num; reps?: Num; maxWeight?: Num }[];
 }
 
 export function summarizeActivity(a: GarminActivity) {
@@ -63,7 +64,16 @@ export function summarizeActivity(a: GarminActivity) {
     anaerobicTrainingEffect: scaled(a.anaerobicTrainingEffect, 1, 1),
     trainingEffectLabel: a.trainingEffectLabel ?? undefined,
     trainingLoad: scaled(a.activityTrainingLoad, 1, 0),
-    vo2Max: a.vO2MaxValue ?? undefined
+    vo2Max: a.vO2MaxValue ?? undefined,
+    exerciseSets: a.summarizedExerciseSets?.length
+      ? a.summarizedExerciseSets.map((set) => ({
+          exercise: set.category,
+          sets: set.sets ?? undefined,
+          reps: set.reps ?? undefined,
+          // Unit unconfirmed (Garmin stores workout weights in grams), so passed through as is.
+          maxWeight: set.maxWeight ?? undefined
+        }))
+      : undefined
   };
 }
 
@@ -71,6 +81,7 @@ export interface GarminActivityDetail {
   activityId: number;
   activityName?: string;
   activityTypeDTO?: { typeKey?: string };
+  splitSummaries?: GarminSplitSummary[];
   summaryDTO?: {
     startTimeLocal?: string;
     distance?: Num;
@@ -96,39 +107,19 @@ export interface GarminActivityDetail {
   };
 }
 
-export interface GarminLap {
-  lapIndex?: number;
+// Garmin groups an activity's splits several ways (by surface, climb...); the INTERVAL_ groups
+// are the workout's structure: warm-up, work, rest, recovery and cool-down.
+export interface GarminSplitSummary {
+  splitType?: string;
+  noOfSplits?: Num;
   distance?: Num;
   duration?: Num;
-  averageSpeed?: Num;
   averageHR?: Num;
   maxHR?: Num;
   averagePower?: Num;
-  averageBikeCadence?: Num;
-  averageRunCadence?: Num;
-  elevationGain?: Num;
 }
 
-export interface GarminHrZone {
-  zoneNumber: number;
-  secsInZone?: Num;
-  zoneLowBoundary?: Num;
-}
-
-export interface GarminExerciseSet {
-  setType?: string;
-  duration?: Num;
-  repetitionCount?: Num;
-  weight?: Num;
-  exercises?: { category?: string; name?: string | null }[];
-}
-
-export function summarizeActivityDetail(
-  detail: GarminActivityDetail,
-  laps: GarminLap[],
-  zones: GarminHrZone[],
-  sets: GarminExerciseSet[] | undefined
-) {
+export function summarizeActivityDetail(detail: GarminActivityDetail) {
   const s = detail.summaryDTO ?? {};
   return {
     id: detail.activityId,
@@ -154,25 +145,16 @@ export function summarizeActivityDetail(
     trainingLoad: scaled(s.activityTrainingLoad, 1, 0),
     calories: s.calories ?? undefined,
     elevationGainM: scaled(s.elevationGain, 1, 0),
-    hrZones: zones.map((z) => ({ zone: z.zoneNumber, fromBpm: z.zoneLowBoundary ?? undefined, minutes: scaled(z.secsInZone, 1 / 60, 1) })),
-    laps: laps.map((lap) => ({
-      lap: lap.lapIndex,
-      distanceKm: scaled(lap.distance, 1 / 1000, 2),
-      durationMin: scaled(lap.duration, 1 / 60, 1),
-      averageSpeedKmh: scaled(lap.averageSpeed, 3.6, 1),
-      averageHr: lap.averageHR ?? undefined,
-      maxHr: lap.maxHR ?? undefined,
-      averagePowerW: lap.averagePower ?? undefined,
-      averageCadence: lap.averageBikeCadence ?? lap.averageRunCadence ?? undefined
-    })),
-    exerciseSets: sets
-      ?.filter((set) => set.setType === "ACTIVE")
-      .map((set) => ({
-        exercise: set.exercises?.[0]?.name ?? set.exercises?.[0]?.category,
-        reps: set.repetitionCount ?? undefined,
-        // Unit unconfirmed (Garmin stores workout weights in grams), so passed through as is.
-        weight: set.weight ?? undefined,
-        durationSec: scaled(set.duration, 1, 0)
+    intervals: (detail.splitSummaries ?? [])
+      .filter((split) => split.splitType?.startsWith("INTERVAL_"))
+      .map((split) => ({
+        type: split.splitType!.slice("INTERVAL_".length),
+        count: split.noOfSplits ?? undefined,
+        durationMin: scaled(split.duration, 1 / 60, 1),
+        distanceKm: scaled(split.distance, 1 / 1000, 2),
+        averageHr: split.averageHR ?? undefined,
+        maxHr: split.maxHR ?? undefined,
+        averagePowerW: scaled(split.averagePower, 1, 0)
       }))
   };
 }
@@ -192,22 +174,15 @@ export interface GarminDailySummary {
 
 export interface GarminSleepDay {
   calendarDate: string;
-  values?: {
-    sleepScore?: Num;
-    sleepScoreQuality?: string;
-    totalSleepTimeInSeconds?: Num;
-    deepTime?: Num;
-    remTime?: Num;
-    lightTime?: Num;
-    awakeTime?: Num;
-    sleepNeed?: Num;
-    restingHeartRate?: Num;
-    avgHeartRate?: Num;
-    avgOvernightHrv?: Num;
-    bodyBatteryChange?: Num;
-    respiration?: Num;
-    skinTempC?: Num;
-  };
+  sleepTimeSeconds?: Num;
+  deepSleepSeconds?: Num;
+  remSleepSeconds?: Num;
+  lightSleepSeconds?: Num;
+  awakeSleepSeconds?: Num;
+  avgHeartRate?: Num;
+  averageRespirationValue?: Num;
+  sleepScores?: { overall?: { value?: Num; qualifierKey?: string } };
+  sleepNeed?: { actual?: Num };
 }
 
 export interface GarminHrvDay {
@@ -217,28 +192,6 @@ export interface GarminHrvDay {
   weeklyAvg?: Num;
   status?: string;
   baseline?: { balancedLow?: Num; balancedUpper?: Num };
-}
-
-export interface GarminReadiness {
-  calendarDate: string;
-  timestamp?: string;
-  inputContext?: string | null;
-  score?: Num;
-  level?: string;
-  feedbackShort?: string;
-  acuteLoad?: Num;
-  hrvFactorFeedback?: string;
-  sleepHistoryFactorFeedback?: string;
-  stressHistoryFactorFeedback?: string;
-}
-
-// Training readiness is recalculated during the day; the morning value is the one that
-// reflects the night's recovery.
-function morningReadiness(entries: GarminReadiness[]): GarminReadiness | undefined {
-  return (
-    entries.find((e) => e.inputContext === "AFTER_WAKEUP_RESET") ??
-    [...entries].sort((a, b) => (a.timestamp ?? "").localeCompare(b.timestamp ?? ""))[0]
-  );
 }
 
 export function dateRange(start: string, end: string): string[] {
@@ -256,7 +209,6 @@ export function mergeDailyHealth(
     summaries: GarminDailySummary[];
     sleep: GarminSleepDay[];
     hrv: GarminHrvDay[];
-    readiness: GarminReadiness[];
   }
 ) {
   const byDate = <T extends { calendarDate: string }>(rows: T[]) => {
@@ -267,16 +219,14 @@ export function mergeDailyHealth(
   const summaries = byDate(data.summaries);
   const sleep = byDate(data.sleep);
   const hrv = byDate(data.hrv);
-  const readiness = byDate(data.readiness);
 
   return dateRange(start, end).map((date) => {
     const day = summaries.get(date)?.[0];
-    const night = sleep.get(date)?.[0]?.values;
+    const night = sleep.get(date)?.[0];
     const hrvDay = hrv.get(date)?.[0];
-    const ready = morningReadiness(readiness.get(date) ?? []);
     return {
       date,
-      restingHr: day?.heartRate?.restingValue ?? night?.restingHeartRate ?? undefined,
+      restingHr: day?.heartRate?.restingValue ?? undefined,
       minHr: day?.heartRate?.minValue ?? undefined,
       maxHr: day?.heartRate?.maxValue ?? undefined,
       hrv: hrvDay && {
@@ -288,18 +238,16 @@ export function mergeDailyHealth(
           hrvDay.baseline?.balancedLow != null ? [hrvDay.baseline.balancedLow, hrvDay.baseline.balancedUpper] : undefined
       },
       sleep: night && {
-        score: night.sleepScore ?? undefined,
-        quality: night.sleepScoreQuality,
-        totalHours: hours(night.totalSleepTimeInSeconds),
-        deepMin: minutes(night.deepTime),
-        remMin: minutes(night.remTime),
-        lightMin: minutes(night.lightTime),
-        awakeMin: minutes(night.awakeTime),
-        needMin: night.sleepNeed ?? undefined,
+        score: night.sleepScores?.overall?.value ?? undefined,
+        quality: night.sleepScores?.overall?.qualifierKey,
+        totalHours: hours(night.sleepTimeSeconds),
+        deepMin: minutes(night.deepSleepSeconds),
+        remMin: minutes(night.remSleepSeconds),
+        lightMin: minutes(night.lightSleepSeconds),
+        awakeMin: minutes(night.awakeSleepSeconds),
+        needMin: night.sleepNeed?.actual ?? undefined,
         avgHr: night.avgHeartRate ?? undefined,
-        bodyBatteryGained: night.bodyBatteryChange ?? undefined,
-        respiration: scaled(night.respiration, 1, 1),
-        skinTempDeviationC: night.skinTempC ?? undefined
+        respiration: scaled(night.averageRespirationValue, 1, 1)
       },
       bodyBattery: day?.bodyBattery && {
         high: day.bodyBattery.maxValue ?? undefined,
@@ -313,15 +261,6 @@ export function mergeDailyHealth(
         max: day.stress.maxLevel ?? undefined,
         qualifier: day.stress.qualifier
       },
-      trainingReadiness: ready && {
-        score: ready.score ?? undefined,
-        level: ready.level,
-        feedback: ready.feedbackShort,
-        acuteLoad: ready.acuteLoad ?? undefined,
-        hrvFactor: ready.hrvFactorFeedback,
-        sleepHistoryFactor: ready.sleepHistoryFactorFeedback,
-        stressHistoryFactor: ready.stressHistoryFactorFeedback
-      },
       steps: day?.movement?.steps?.value ?? undefined,
       activeCalories: day?.calories?.burnedActive ?? undefined,
       moderateIntensityMin: day?.intensityMinutes?.moderate ?? undefined,
@@ -329,113 +268,4 @@ export function mergeDailyHealth(
       respiration: day?.respiration?.avgValue ?? undefined
     };
   });
-}
-
-// ---------- training status ----------
-
-interface DeviceKeyed<T> {
-  [deviceId: string]: T;
-}
-
-export interface GarminTrainingStatus {
-  mostRecentVO2Max?: {
-    generic?: { calendarDate?: string; vo2MaxPreciseValue?: Num; fitnessAge?: Num } | null;
-    cycling?: { calendarDate?: string; vo2MaxPreciseValue?: Num } | null;
-  } | null;
-  mostRecentTrainingLoadBalance?: {
-    metricsTrainingLoadBalanceDTOMap?: DeviceKeyed<{
-      calendarDate?: string;
-      monthlyLoadAerobicLow?: Num;
-      monthlyLoadAerobicHigh?: Num;
-      monthlyLoadAnaerobic?: Num;
-      monthlyLoadAerobicLowTargetMin?: Num;
-      monthlyLoadAerobicLowTargetMax?: Num;
-      monthlyLoadAerobicHighTargetMin?: Num;
-      monthlyLoadAerobicHighTargetMax?: Num;
-      monthlyLoadAnaerobicTargetMin?: Num;
-      monthlyLoadAnaerobicTargetMax?: Num;
-      trainingBalanceFeedbackPhrase?: string;
-    }> | null;
-    recordedDevices?: { deviceId: number; deviceName?: string }[];
-  } | null;
-  mostRecentTrainingStatus?: {
-    latestTrainingStatusData?: DeviceKeyed<{
-      calendarDate?: string;
-      sinceDate?: string;
-      sport?: string;
-      weeklyTrainingLoad?: Num;
-      loadTunnelMin?: Num;
-      loadTunnelMax?: Num;
-      trainingStatusFeedbackPhrase?: string;
-      acuteTrainingLoadDTO?: {
-        acwrStatus?: string;
-        dailyTrainingLoadAcute?: Num;
-        dailyTrainingLoadChronic?: Num;
-        minTrainingLoadChronic?: Num;
-        maxTrainingLoadChronic?: Num;
-        dailyAcuteChronicWorkloadRatio?: Num;
-      } | null;
-    }> | null;
-    recordedDevices?: { deviceId: number; deviceName?: string }[];
-  } | null;
-}
-
-const round = (value: Num) => scaled(value, 1, 0);
-
-export function summarizeTrainingStatus(data: GarminTrainingStatus) {
-  const devices = new Map<string, string | undefined>();
-  for (const d of [
-    ...(data.mostRecentTrainingStatus?.recordedDevices ?? []),
-    ...(data.mostRecentTrainingLoadBalance?.recordedDevices ?? [])
-  ]) {
-    devices.set(String(d.deviceId), d.deviceName);
-  }
-  const vo2 = data.mostRecentVO2Max;
-  return {
-    vo2Max: {
-      general: vo2?.generic?.vo2MaxPreciseValue != null ? { value: vo2.generic.vo2MaxPreciseValue, date: vo2.generic.calendarDate } : undefined,
-      cycling: vo2?.cycling?.vo2MaxPreciseValue != null ? { value: vo2.cycling.vo2MaxPreciseValue, date: vo2.cycling.calendarDate } : undefined,
-      fitnessAge: vo2?.generic?.fitnessAge ?? undefined
-    },
-    trainingStatus: Object.entries(data.mostRecentTrainingStatus?.latestTrainingStatusData ?? {}).map(([deviceId, s]) => ({
-      device: devices.get(deviceId) ?? deviceId,
-      date: s.calendarDate,
-      status: s.trainingStatusFeedbackPhrase,
-      since: s.sinceDate,
-      sport: s.sport,
-      acuteLoad: round(s.acuteTrainingLoadDTO?.dailyTrainingLoadAcute),
-      chronicLoad: round(s.acuteTrainingLoadDTO?.dailyTrainingLoadChronic),
-      optimalChronicLoadRange:
-        s.acuteTrainingLoadDTO?.minTrainingLoadChronic != null
-          ? [round(s.acuteTrainingLoadDTO.minTrainingLoadChronic), round(s.acuteTrainingLoadDTO.maxTrainingLoadChronic)]
-          : undefined,
-      acuteChronicRatio: s.acuteTrainingLoadDTO?.dailyAcuteChronicWorkloadRatio ?? undefined,
-      acuteChronicStatus: s.acuteTrainingLoadDTO?.acwrStatus
-    })),
-    fourWeekLoadFocus: Object.entries(data.mostRecentTrainingLoadBalance?.metricsTrainingLoadBalanceDTOMap ?? {}).map(
-      ([deviceId, b]) => ({
-        device: devices.get(deviceId) ?? deviceId,
-        date: b.calendarDate,
-        feedback: b.trainingBalanceFeedbackPhrase,
-        lowAerobic: { load: round(b.monthlyLoadAerobicLow), target: [round(b.monthlyLoadAerobicLowTargetMin), round(b.monthlyLoadAerobicLowTargetMax)] },
-        highAerobic: { load: round(b.monthlyLoadAerobicHigh), target: [round(b.monthlyLoadAerobicHighTargetMin), round(b.monthlyLoadAerobicHighTargetMax)] },
-        anaerobic: { load: round(b.monthlyLoadAnaerobic), target: [round(b.monthlyLoadAnaerobicTargetMin), round(b.monthlyLoadAnaerobicTargetMax)] }
-      })
-    )
-  };
-}
-
-export interface GarminMaxMet {
-  generic?: { calendarDate?: string; vo2MaxPreciseValue?: Num } | null;
-  cycling?: { calendarDate?: string; vo2MaxPreciseValue?: Num } | null;
-}
-
-export function summarizeVo2MaxHistory(rows: GarminMaxMet[]) {
-  return rows
-    .map((row) => ({
-      date: row.generic?.calendarDate ?? row.cycling?.calendarDate,
-      general: row.generic?.vo2MaxPreciseValue ?? undefined,
-      cycling: row.cycling?.vo2MaxPreciseValue ?? undefined
-    }))
-    .filter((row) => row.date && (row.general !== undefined || row.cycling !== undefined));
 }

@@ -10,7 +10,10 @@
 	],
 	"vars": {
 		// The public base URL of this Worker. Update it after the first deploy.
-		"PUBLIC_URL": "https://chad-the-coach.jakob-a15.workers.dev"
+		"PUBLIC_URL": "https://chad-the-coach.jakob-a15.workers.dev",
+		// Which Garmin integration to use: "personal" (the personal API, GARMIN_API_KEY) or "legacy"
+		// (the Connect app's API, signed in with scripts/garmin_login.py). Change it and run npm run deploy.
+		"GARMIN_API": "legacy"
 	},
 	// No id: Wrangler creates the namespace on the first deploy.
 	"kv_namespaces": [

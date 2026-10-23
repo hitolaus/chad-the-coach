@@ -1,1 +1,3 @@
 OWNER_PASSWORD="choose-a-long-random-password"
+# From https://connect.garmin.com/app/settings/personalApiToken
+GARMIN_API_KEY="GCDC_..."

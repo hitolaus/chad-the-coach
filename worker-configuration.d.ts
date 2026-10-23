@@ -5,6 +5,8 @@ interface __BaseEnv_Env {
 	OAUTH_KV: KVNamespace;
 	PUBLIC_URL: "https://chad-the-coach.example.workers.dev";
 	OWNER_PASSWORD: string;
+	GARMIN_API_KEY: string;
+	GARMIN_API: string;
 }
 declare namespace Cloudflare {
 	interface GlobalProps {
@@ -17,7 +19,7 @@ type StringifyValues<EnvType extends Record<string, unknown>> = {
 	[Binding in keyof EnvType]: EnvType[Binding] extends string ? EnvType[Binding] : string;
 };
 declare namespace NodeJS {
-	interface ProcessEnv extends StringifyValues<Pick<Cloudflare.Env, "PUBLIC_URL" | "OWNER_PASSWORD">> {}
+	interface ProcessEnv extends StringifyValues<Pick<Cloudflare.Env, "PUBLIC_URL" | "OWNER_PASSWORD" | "GARMIN_API_KEY">> {}
 }
 declare module "*.txt" {
 	const value: string;
